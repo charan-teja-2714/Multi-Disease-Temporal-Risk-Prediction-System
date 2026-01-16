@@ -1,0 +1,72 @@
+# Frontend (excluded from repository)
+frontend/
+
+# Backend API files (keep model training code)
+backend/api/
+backend/main.py
+backend/*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# PyTorch Models
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Data (optional - uncomment if data files are large)
+# data/raw/
+# data/processed/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
