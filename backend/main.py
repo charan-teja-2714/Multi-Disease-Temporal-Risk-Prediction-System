@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -8,7 +8,10 @@ import torch
 import json
 import uvicorn
 from dotenv import load_dotenv
-
+import os
+import re
+import pdfplumber
+from io import BytesIO
 # Load environment variables
 load_dotenv()
 
@@ -216,119 +219,131 @@ async def get_patient_health_records(patient_id: int, db: Session = Depends(get_
     ).order_by(HealthRecord.visit_date).all()
     return records
 
-# RAG Report Upload Endpoint
-@app.post("/upload-report/{patient_id}")
-async def upload_medical_report(
+# Feature name mapping for different report formats
+FEATURE_MAPPING = {
+    'glucose': ['glucose', 'blood glucose', 'fasting glucose', 'fbs', 'blood sugar', 'sugar level', 'fasting blood sugar'],
+    'hba1c': ['hba1c', 'a1c', 'glycated hemoglobin', 'glycohemoglobin', 'hemoglobin a1c'],
+    'creatinine': ['creatinine', 'serum creatinine', 'creat', 'cr', 's.creatinine'],
+    'bun': ['bun', 'blood urea nitrogen', 'urea', 'urea nitrogen', 'blood urea'],
+    'systolic_bp': ['systolic', 'systolic bp', 'sbp', 'sys bp', 'systolic blood pressure'],
+    'diastolic_bp': ['diastolic', 'diastolic bp', 'dbp', 'dia bp', 'diastolic blood pressure'],
+    'cholesterol': ['cholesterol', 'total cholesterol', 'chol', 'tc', 't.cholesterol'],
+    'hdl': ['hdl', 'hdl cholesterol', 'good cholesterol', 'hdl-c'],
+    'ldl': ['ldl', 'ldl cholesterol', 'bad cholesterol', 'ldl-c'],
+    'triglycerides': ['triglycerides', 'tg', 'trigs', 'triglyceride'],
+    'bmi': ['bmi', 'body mass index']
+}
+
+def extract_health_values(text: str) -> Dict[str, Optional[float]]:
+    """Extract health values from text using feature mapping"""
+    text_lower = text.lower()
+    extracted = {}
+    
+    for field, variations in FEATURE_MAPPING.items():
+        for variation in variations:
+            patterns = [
+                rf'{re.escape(variation)}\s*[:\-=]?\s*(\d+\.?\d*)',
+                rf'{re.escape(variation)}\s+(\d+\.?\d*)'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    try:
+                        extracted[field] = float(match.group(1))
+                        break
+                    except:
+                        continue
+            if field in extracted:
+                break
+    
+    # Handle BP format like "120/80"
+    bp_pattern = r'(?:bp|blood pressure)\s*[:\-=]?\s*(\d+)\s*/\s*(\d+)'
+    bp_match = re.search(bp_pattern, text_lower)
+    if bp_match:
+        try:
+            extracted['systolic_bp'] = float(bp_match.group(1))
+            extracted['diastolic_bp'] = float(bp_match.group(2))
+        except:
+            pass
+    
+    return extracted
+
+# Upload report and extract values (no save yet)
+@app.post("/extract-report/{patient_id}")
+async def extract_report_data(
     patient_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Upload and process medical report for data extraction"""
+    """Extract health data from report without saving"""
     global rag_extractor
     
-    # Verify patient exists
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
     
-    # Validate file type
-    allowed_types = {
-        'application/pdf': '.pdf',
-        'image/jpeg': '.jpg',
-        'image/jpg': '.jpg', 
-        'image/png': '.png',
-        'image/tiff': '.tiff',
-        'image/bmp': '.bmp'
-    }
-    
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {file.content_type}. Supported: PDF, JPG, PNG, TIFF, BMP"
-        )
-    
     try:
-        # Read file content
         file_content = await file.read()
-        
         if len(file_content) == 0:
-            raise HTTPException(status_code=400, detail="Empty file uploaded")
+            raise HTTPException(status_code=400, detail="Empty file")
         
         # Extract text using OCR
-        print(f"Extracting text from {file.filename} ({file.content_type})")
         extracted_text = extract_medical_text(file_content, file.filename)
-        
         if not extracted_text:
-            return {
-                "success": False,
-                "message": "No text could be extracted from the uploaded file",
-                "extracted_fields": 0,
-                "merged_fields": 0
-            }
+            raise HTTPException(status_code=400, detail="Could not extract text from file")
         
-        print(f"Extracted {len(extracted_text)} characters of text")
-        
-        # If RAG extractor is available, use it; otherwise use fallback
+        # Use RAG/LLM for extraction
         if rag_extractor:
-            print("Processing text with RAG extractor")
-            extracted_data = rag_extractor.extract_medical_data(extracted_text)
-            print(f"RAG extracted data: {extracted_data}")
-            
-            # If RAG returns empty, try fallback
-            if all(v is None for v in extracted_data.values()):
-                print("RAG returned empty, using fallback extraction")
-                extracted_data = fallback_extract_medical_data(extracted_text)
-                print(f"Fallback extracted data: {extracted_data}")
+            health_data = rag_extractor.extract_medical_data(extracted_text)
         else:
-            print("RAG extractor not available, using fallback extraction")
-            extracted_data = fallback_extract_medical_data(extracted_text)
-            print(f"Fallback extracted data: {extracted_data}")
+            health_data = extract_health_values(extracted_text)
         
-        # Validate extracted data
-        validated_data = SafeMerger.validate_extracted_data(extracted_data)
-        print(f"Validated data: {validated_data}")
+        # Filter out None values for response
+        extracted_values = {k: v for k, v in health_data.items() if v is not None}
         
-        # Get merge summary before processing
-        latest_record = SafeMerger.get_latest_health_record(db, patient_id)
-        merge_summary = SafeMerger.get_merge_summary(validated_data, latest_record)
-        print(f"Merge summary: {merge_summary}")
+        if not extracted_values:
+            raise HTTPException(status_code=400, detail="No health values found in report")
         
-        if merge_summary['merged_count'] == 0:
-            return {
-                "success": True,
-                "message": "No new medical data found to merge",
-                "extracted_fields": merge_summary['extracted_count'],
-                "merged_fields": 0,
-                "existing_fields": merge_summary['existing_fields']
-            }
-        
-        # Perform safe merge
-        new_record = SafeMerger.merge_extracted_data(db, patient_id, validated_data)
-        
-        if new_record:
-            return {
-                "success": True,
-                "message": f"Successfully extracted and merged medical data",
-                "extracted_fields": merge_summary['extracted_count'],
-                "merged_fields": merge_summary['merged_count'],
-                "new_fields": merge_summary['new_fields'],
-                "existing_fields": merge_summary['existing_fields'],
-                "record_id": new_record.id
-            }
-        else:
-            return {
-                "success": False,
-                "message": "Failed to create new health record",
-                "extracted_fields": merge_summary['extracted_count'],
-                "merged_fields": 0
-            }
-            
+        return {
+            "success": True,
+            "extracted_values": extracted_values,
+            "fields_found": len(extracted_values)
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Upload processing error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process uploaded file: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+# Save confirmed health record
+@app.post("/save-extracted-record/{patient_id}")
+async def save_extracted_record(
+    patient_id: int,
+    record: HealthRecordCreate,
+    db: Session = Depends(get_db)
+):
+    """Save health record after user confirmation"""
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    record_data = record.dict()
+    if isinstance(record_data['visit_date'], str):
+        if 'T' in record_data['visit_date']:
+            record_data['visit_date'] = datetime.fromisoformat(record_data['visit_date'].replace('Z', '+00:00'))
+        else:
+            record_data['visit_date'] = datetime.strptime(record_data['visit_date'], '%Y-%m-%d')
+    
+    db_record = HealthRecord(**record_data)
+    db.add(db_record)
+    db.commit()
+    db.refresh(db_record)
+    
+    return {
+        "success": True,
+        "message": "Health record saved successfully",
+        "record_id": db_record.id
+    }
 
 def fallback_extract_medical_data(text: str) -> Dict[str, Optional[float]]:
     """Fallback extraction using regex patterns when RAG is not available"""
@@ -452,32 +467,102 @@ async def predict_disease_risk(patient_id: int, db: Session = Depends(get_db)):
                     heart_risk = float(predictions.get('heart_disease', [0.5])[0])
                     kidney_risk = float(predictions.get('kidney_disease', [0.5])[0])
                 else:
-                    # Use health data to calculate risk scores consistently
+                    # Temporal risk calculation using all records
                     latest = recent_records[-1]
                     
-                    # Diabetes risk based on glucose and HbA1c
-                    diabetes_risk = 0.3
-                    if latest.glucose and latest.glucose > 125:
-                        diabetes_risk += 0.3
-                    if latest.hba1c and latest.hba1c > 6.5:
-                        diabetes_risk += 0.3
-                    diabetes_risk = min(diabetes_risk, 0.95)
-                    
-                    # Heart disease risk based on BP and cholesterol
-                    heart_risk = 0.3
-                    if latest.systolic_bp and latest.systolic_bp > 140:
-                        heart_risk += 0.25
-                    if latest.cholesterol and latest.cholesterol > 240:
-                        heart_risk += 0.25
-                    heart_risk = min(heart_risk, 0.95)
-                    
-                    # Kidney disease risk based on creatinine and BUN
-                    kidney_risk = 0.3
-                    if latest.creatinine and latest.creatinine > 1.3:
-                        kidney_risk += 0.3
-                    if latest.bun and latest.bun > 20:
-                        kidney_risk += 0.2
-                    kidney_risk = min(kidney_risk, 0.95)
+                    # Calculate trends if multiple records exist
+                    if len(recent_records) >= 2:
+                        # Get trend direction (improving/worsening)
+                        first_record = recent_records[0]
+                        
+                        print(f"DEBUG: Temporal analysis - {len(recent_records)} records")
+                        print(f"DEBUG: First record - Glucose: {first_record.glucose}, BP: {first_record.systolic_bp}, Creatinine: {first_record.creatinine}")
+                        print(f"DEBUG: Latest record - Glucose: {latest.glucose}, BP: {latest.systolic_bp}, Creatinine: {latest.creatinine}")
+                        
+                        # Diabetes risk - consider trend and current values
+                        diabetes_risk = 0.2
+                        if latest.glucose:
+                            if latest.glucose > 140:
+                                diabetes_risk += 0.4
+                            elif latest.glucose > 125:
+                                diabetes_risk += 0.25
+                            # Check trend
+                            if first_record.glucose and latest.glucose > first_record.glucose:
+                                diabetes_risk += 0.1  # Worsening trend
+                                print(f"DEBUG: Diabetes - Worsening glucose trend detected ({first_record.glucose} -> {latest.glucose})")
+                        if latest.hba1c:
+                            if latest.hba1c > 7.0:
+                                diabetes_risk += 0.3
+                            elif latest.hba1c > 6.5:
+                                diabetes_risk += 0.15
+                            # Check trend
+                            if first_record.hba1c and latest.hba1c > first_record.hba1c:
+                                diabetes_risk += 0.1  # Worsening trend
+                                print(f"DEBUG: Diabetes - Worsening HbA1c trend detected ({first_record.hba1c} -> {latest.hba1c})")
+                        diabetes_risk = min(diabetes_risk, 0.95)
+                        print(f"DEBUG: Calculated diabetes_risk = {diabetes_risk:.2f}")
+                        
+                        # Heart disease risk - consider trend and current values
+                        heart_risk = 0.2
+                        if latest.systolic_bp:
+                            if latest.systolic_bp > 160:
+                                heart_risk += 0.35
+                            elif latest.systolic_bp > 140:
+                                heart_risk += 0.2
+                            # Check trend
+                            if first_record.systolic_bp and latest.systolic_bp > first_record.systolic_bp:
+                                heart_risk += 0.1  # Worsening trend
+                        if latest.cholesterol:
+                            if latest.cholesterol > 260:
+                                heart_risk += 0.3
+                            elif latest.cholesterol > 240:
+                                heart_risk += 0.15
+                            # Check trend
+                            if first_record.cholesterol and latest.cholesterol > first_record.cholesterol:
+                                heart_risk += 0.1  # Worsening trend
+                        heart_risk = min(heart_risk, 0.95)
+                        
+                        # Kidney disease risk - consider trend and current values
+                        kidney_risk = 0.2
+                        if latest.creatinine:
+                            if latest.creatinine > 1.5:
+                                kidney_risk += 0.35
+                            elif latest.creatinine > 1.3:
+                                kidney_risk += 0.2
+                            # Check trend
+                            if first_record.creatinine and latest.creatinine > first_record.creatinine:
+                                kidney_risk += 0.15  # Worsening trend (more critical)
+                        if latest.bun:
+                            if latest.bun > 25:
+                                kidney_risk += 0.25
+                            elif latest.bun > 20:
+                                kidney_risk += 0.1
+                            # Check trend
+                            if first_record.bun and latest.bun > first_record.bun:
+                                kidney_risk += 0.1  # Worsening trend
+                        kidney_risk = min(kidney_risk, 0.95)
+                    else:
+                        # Single record - use simpler calculation
+                        diabetes_risk = 0.3
+                        if latest.glucose and latest.glucose > 125:
+                            diabetes_risk += 0.3
+                        if latest.hba1c and latest.hba1c > 6.5:
+                            diabetes_risk += 0.3
+                        diabetes_risk = min(diabetes_risk, 0.95)
+                        
+                        heart_risk = 0.3
+                        if latest.systolic_bp and latest.systolic_bp > 140:
+                            heart_risk += 0.25
+                        if latest.cholesterol and latest.cholesterol > 240:
+                            heart_risk += 0.25
+                        heart_risk = min(heart_risk, 0.95)
+                        
+                        kidney_risk = 0.3
+                        if latest.creatinine and latest.creatinine > 1.3:
+                            kidney_risk += 0.3
+                        if latest.bun and latest.bun > 20:
+                            kidney_risk += 0.2
+                        kidney_risk = min(kidney_risk, 0.95)
                     
             except Exception as model_error:
                 print(f"DEBUG: Model inference error: {model_error}")
@@ -506,6 +591,11 @@ async def predict_disease_risk(patient_id: int, db: Session = Depends(get_db)):
                 kidney_risk = min(kidney_risk, 0.95)
         
         # Generate explanation (simplified for demo)
+        trend_info = ""
+        if len(recent_records) >= 2:
+            first = recent_records[0]
+            trend_info = f"\n\nTemporal Trend Analysis:\n- Records analyzed: {len(recent_records)}\n- First record date: {first.visit_date}\n- Latest record date: {recent_records[-1].visit_date}\n- Glucose trend: {first.glucose or 'N/A'} → {recent_records[-1].glucose or 'N/A'}\n- BP trend: {first.systolic_bp or 'N/A'} → {recent_records[-1].systolic_bp or 'N/A'}\n- Creatinine trend: {first.creatinine or 'N/A'} → {recent_records[-1].creatinine or 'N/A'}\n"
+        
         explanation_text = f"""
 Risk Assessment Summary:
 - Diabetes Risk: {diabetes_risk:.1%} ({'High' if diabetes_risk > 0.7 else 'Moderate' if diabetes_risk > 0.3 else 'Low'})
@@ -526,7 +616,7 @@ Recommendations:
 {'- Consult cardiologist for cardiovascular assessment' if heart_risk > 0.5 else ''}
 {'- Monitor kidney function and maintain adequate hydration' if kidney_risk > 0.5 else ''}
 {'- Continue regular health monitoring and maintain healthy lifestyle' if diabetes_risk <= 0.5 and heart_risk <= 0.5 and kidney_risk <= 0.5 else ''}
-
+{trend_info}
 Note: This is an AI-generated risk assessment. Please consult healthcare professionals for medical advice.
         """
         
@@ -619,4 +709,4 @@ async def get_model_info():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

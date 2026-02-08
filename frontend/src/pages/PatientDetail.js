@@ -15,7 +15,8 @@ import {
   message,
   Divider,
   Upload,
-  Modal
+  Modal,
+  InputNumber
 } from 'antd';
 import {
   UserOutlined,
@@ -41,6 +42,8 @@ const PatientDetail = () => {
   const [predicting, setPredicting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadModalVisible, setUploadModalVisible] = useState(false);
+  const [extractedData, setExtractedData] = useState({});
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
 
   const loadPatientData = useCallback(async () => {
     try {
@@ -90,22 +93,41 @@ const PatientDetail = () => {
       const result = await patientAPI.uploadMedicalReport(id, file);
       
       if (result.success) {
-        message.success(
-          `Successfully processed report! Extracted ${result.extracted_fields} fields, merged ${result.merged_fields} new values.`
-        );
-        loadPatientData(); // Reload to show new health records
+        setExtractedData(result.extracted_values);
+        setShowConfirmModal(true);
         setUploadModalVisible(false);
-      } else {
-        message.warning(result.message || 'No new data extracted from report');
+        message.success(`Extracted ${result.fields_found} values from report`);
       }
     } catch (error) {
-      message.error('Failed to process medical report');
+      message.error(error.response?.data?.detail || 'Failed to extract data from report');
       console.error('Error uploading report:', error);
     } finally {
       setUploading(false);
     }
     
-    return false; // Prevent default upload behavior
+    return false;
+  };
+
+  const handleSaveExtracted = async () => {
+    try {
+      setUploading(true);
+      const recordData = {
+        patient_id: parseInt(id),
+        visit_date: moment().format('YYYY-MM-DD'),
+        source: 'report',
+        ...extractedData
+      };
+      
+      await patientAPI.addHealthRecord(recordData);
+      message.success('Health record saved successfully');
+      setShowConfirmModal(false);
+      setExtractedData({});
+      loadPatientData();
+    } catch (error) {
+      message.error('Failed to save health record');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const getRiskColor = (risk) => {
@@ -142,8 +164,8 @@ const PatientDetail = () => {
       dataIndex: 'source',
       key: 'source',
       render: (source) => (
-        <Tag color={source === 'rag_report' ? 'blue' : 'green'}>
-          {source === 'rag_report' ? 'Report' : 'Manual'}
+        <Tag color={source === 'report' ? 'blue' : 'green'}>
+          {source === 'report' ? 'Report' : 'Manual'}
         </Tag>
       ),
     },
@@ -398,7 +420,7 @@ const PatientDetail = () => {
         ) : (
           <Table
             columns={healthRecordColumns}
-            dataSource={healthRecords}
+            dataSource={[...healthRecords].reverse()}
             rowKey="id"
             pagination={{ pageSize: 10 }}
             scroll={{ x: 800 }}
@@ -454,6 +476,38 @@ const PatientDetail = () => {
             </div>
           )}
         </div>
+      </Modal>
+      {/* Confirm Extracted Data Modal */}
+      <Modal
+        title="Confirm Extracted Values"
+        open={showConfirmModal}
+        onOk={handleSaveExtracted}
+        onCancel={() => setShowConfirmModal(false)}
+        okText="Save Record"
+        cancelText="Cancel"
+        confirmLoading={uploading}
+        width={700}
+      >
+        <Text type="secondary" style={{ display: 'block', marginBottom: '16px' }}>
+          Review and edit the extracted values before saving:
+        </Text>
+        <Row gutter={[16, 16]}>
+          {Object.entries(extractedData).map(([key, value]) => (
+            <Col xs={24} md={12} key={key}>
+              <div style={{ marginBottom: '12px' }}>
+                <Text strong style={{ display: 'block', marginBottom: '4px' }}>
+                  {key.replace('_', ' ').toUpperCase()}
+                </Text>
+                <InputNumber
+                  value={value}
+                  onChange={(val) => setExtractedData({ ...extractedData, [key]: val })}
+                  style={{ width: '100%' }}
+                  step={key === 'hba1c' || key === 'creatinine' || key === 'bmi' ? 0.1 : 1}
+                />
+              </div>
+            </Col>
+          ))}
+        </Row>
       </Modal>
     </div>
   );

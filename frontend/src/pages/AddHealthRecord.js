@@ -12,11 +12,14 @@ import {
   Typography,
   Divider,
   Space,
-  Alert
+  Alert,
+  Upload,
+  Modal
 } from 'antd';
-import { SaveOutlined, UserOutlined } from '@ant-design/icons';
+import { SaveOutlined, UserOutlined, UploadOutlined } from '@ant-design/icons';
 import { patientAPI } from '../services/api';
 import moment from 'moment';
+import axios from 'axios';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -26,6 +29,9 @@ const AddHealthRecord = () => {
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [showExtractModal, setShowExtractModal] = useState(false);
+  const [extractedData, setExtractedData] = useState({});
 
   useEffect(() => {
     loadPatients();
@@ -48,7 +54,6 @@ const AddHealthRecord = () => {
     try {
       setSubmitting(true);
       
-      // Format the data for API
       const recordData = {
         ...values,
         visit_date: values.visit_date.format('YYYY-MM-DD'),
@@ -62,6 +67,64 @@ const AddHealthRecord = () => {
     } catch (error) {
       message.error('Failed to add health record');
       console.error('Error adding health record:', error);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleFileUpload = async (file, patientId) => {
+    if (!patientId) {
+      message.error('Please select a patient first');
+      return false;
+    }
+
+    try {
+      setExtracting(true);
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+      const response = await axios.post(
+        `${API_BASE_URL}/extract-report/${patientId}`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+
+      if (response.data.success) {
+        setExtractedData(response.data.extracted_values);
+        setShowExtractModal(true);
+        message.success(`Extracted ${response.data.fields_found} values from report`);
+      }
+    } catch (error) {
+      message.error(error.response?.data?.detail || 'Failed to extract data from report');
+    } finally {
+      setExtracting(false);
+    }
+    return false;
+  };
+
+  const handleConfirmExtracted = async () => {
+    try {
+      setSubmitting(true);
+      const patientId = form.getFieldValue('patient_id');
+      const visitDate = form.getFieldValue('visit_date');
+
+      const recordData = {
+        patient_id: patientId,
+        visit_date: visitDate.format('YYYY-MM-DD'),
+        ...extractedData
+      };
+
+      const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+      await axios.post(`${API_BASE_URL}/save-extracted-record/${patientId}`, recordData);
+      
+      message.success('Health record saved successfully');
+      setShowExtractModal(false);
+      setExtractedData({});
+      form.resetFields();
+      form.setFieldsValue({ visit_date: moment() });
+    } catch (error) {
+      message.error('Failed to save health record');
     } finally {
       setSubmitting(false);
     }
@@ -108,8 +171,7 @@ const AddHealthRecord = () => {
     <div>
       <Title level={2}>Add Health Record</Title>
       <Text type="secondary">
-        Enter health measurements for a patient visit. All fields are optional, 
-        but more complete data improves prediction accuracy.
+        Enter health measurements manually or upload a medical report (PDF/Image).
       </Text>
 
       <Card style={{ marginTop: '24px' }}>
@@ -165,6 +227,27 @@ const AddHealthRecord = () => {
               </Form.Item>
             </Col>
           </Row>
+
+          <Alert
+            message="Upload Medical Report"
+            description={
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Text>Upload PDF or image report to auto-extract health values</Text>
+                <Upload
+                  beforeUpload={(file) => handleFileUpload(file, form.getFieldValue('patient_id'))}
+                  accept=".pdf,.jpg,.jpeg,.png,.tiff,.bmp"
+                  showUploadList={false}
+                >
+                  <Button icon={<UploadOutlined />} loading={extracting}>
+                    Upload Report
+                  </Button>
+                </Upload>
+              </Space>
+            }
+            type="info"
+            showIcon
+            style={{ marginBottom: '24px' }}
+          />
 
           <Divider>Blood Sugar & Diabetes Markers</Divider>
           <Row gutter={[16, 16]}>
@@ -251,6 +334,38 @@ const AddHealthRecord = () => {
           </Form.Item>
         </Form>
       </Card>
+
+      {/* Extracted Data Confirmation Modal */}
+      <Modal
+        title="Confirm Extracted Values"
+        open={showExtractModal}
+        onOk={handleConfirmExtracted}
+        onCancel={() => setShowExtractModal(false)}
+        okText="Save Record"
+        cancelText="Cancel"
+        confirmLoading={submitting}
+        width={600}
+      >
+        <Text type="secondary" style={{ display: 'block', marginBottom: '16px' }}>
+          Review and edit the extracted values before saving:
+        </Text>
+        <Form layout="vertical">
+          <Row gutter={[16, 16]}>
+            {Object.entries(extractedData).map(([key, value]) => (
+              <Col xs={24} md={12} key={key}>
+                <Form.Item label={key.replace('_', ' ').toUpperCase()}>
+                  <InputNumber
+                    value={value}
+                    onChange={(val) => setExtractedData({ ...extractedData, [key]: val })}
+                    style={{ width: '100%' }}
+                    step={key === 'hba1c' || key === 'creatinine' || key === 'bmi' ? 0.1 : 1}
+                  />
+                </Form.Item>
+              </Col>
+            ))}
+          </Row>
+        </Form>
+      </Modal>
     </div>
   );
 };
