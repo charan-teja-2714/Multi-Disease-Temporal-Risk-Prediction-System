@@ -30,7 +30,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import { patientAPI } from '../services/api';
 import moment from 'moment';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
 const PatientDetail = () => {
   const { id } = useParams();
