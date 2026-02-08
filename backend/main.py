@@ -590,7 +590,7 @@ async def debug_patient_data(patient_id: int, db: Session = Depends(get_db)):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "timestamp": datetime.now()}
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 # Model info endpoint
 @app.get("/model-info")

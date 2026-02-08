@@ -145,7 +145,7 @@ class ModelTrainer:
     
     def train(self, train_loader: DataLoader, val_loader: DataLoader, 
               num_epochs: int = 100, learning_rate: float = 0.001, 
-              patience: int = 10, save_path: str = 'best_model.pth'):
+              patience: int = 10, save_path: str = 'multi_disease_tcn.pth'):
         """Full training loop with early stopping"""
         
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)

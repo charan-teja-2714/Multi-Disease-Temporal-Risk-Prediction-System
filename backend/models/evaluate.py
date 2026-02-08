@@ -17,7 +17,7 @@ from data.preprocessor import HealthDataPreprocessor
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN = 10
 THRESHOLD = 0.5
-MODEL_PATH = "best_model.pth"
+MODEL_PATH = "multi_disease_tcn.pth"
 # ----------------------------------------
 
 
