@@ -119,26 +119,30 @@ async def startup_event():
     preprocessor = HealthDataPreprocessor()
     
     # Initialize RAG extractor
-    rag_extractor = create_rag_extractor()
-    if rag_extractor is None:
-        print("Warning: RAG extractor not initialized - file upload will be disabled")
+    try:
+        rag_extractor = create_rag_extractor()
+        if rag_extractor is None:
+            print("Warning: RAG extractor not initialized - file upload will be disabled")
+    except Exception as e:
+        print(f"Warning: RAG extractor initialization failed: {e}")
+        rag_extractor = None
     
-    # Load trained model (you would load your actual trained model here)
-    model = MultiTaskTCN(input_size=13)
-    # model.load_state_dict(torch.load('path_to_trained_model.pth'))
-    model.eval()
+    # Load trained model
+    try:
+        model = MultiTaskTCN(input_size=13)
+        model.eval()
+        print("Model loaded successfully")
+    except Exception as e:
+        print(f"Warning: Model initialization failed: {e}")
+        model = None
     
-    # Initialize explainer (would use actual background data in production)
-    explainer = MedicalExplainer(model)
-    # explainer.create_explainer(background_data)
-    generator = SyntheticHealthDataGenerator()
-    patients_df, health_df = generator.generate_dataset(n_patients=200)
-
-    preprocessor.create_sequences(
-        health_df,
-        patients_df,
-        sequence_length=10
-    )
+    # Initialize explainer (optional for production)
+    try:
+        explainer = MedicalExplainer(model) if model else None
+    except Exception as e:
+        print(f"Warning: Explainer initialization failed: {e}")
+        explainer = None
+    
     print("API initialized successfully!")
 
 # Patient management endpoints
