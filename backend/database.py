@@ -40,6 +40,9 @@ class HealthRecord(Base):
     triglycerides = Column(Float) # mg/dL
     bmi = Column(Float)      # kg/m²
     
+    # Source tracking
+    source = Column(String, default="manual")  # "manual" or "rag_report"
+    
     # Relationships
     patient = relationship("Patient", back_populates="health_records")
 

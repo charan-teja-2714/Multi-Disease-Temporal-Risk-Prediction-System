@@ -1,10 +1,12 @@
-# Frontend (excluded from repository)
-frontend/
-
 # Backend API files (keep model training code)
 backend/api/
-backend/main.py
 backend/*.db
+backend/medical_predictions.db
+
+# Test and setup files
+backend/test_*.py
+backend/setup_*.py
+backend/example_*.py
 
 # Python
 __pycache__/
@@ -49,6 +51,11 @@ checkpoints/
 # Environment variables
 .env
 .env.local
+
+# Frontend
+frontend/node_modules/
+frontend/build/
+frontend/.env
 
 # IDE
 .vscode/
