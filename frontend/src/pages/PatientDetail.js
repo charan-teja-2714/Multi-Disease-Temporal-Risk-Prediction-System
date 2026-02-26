@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
   Row,
@@ -16,7 +16,9 @@ import {
   Divider,
   Upload,
   Modal,
-  InputNumber
+  InputNumber,
+  Popconfirm,
+  Tooltip,
 } from 'antd';
 import {
   UserOutlined,
@@ -25,9 +27,21 @@ import {
   CalendarOutlined,
   WarningOutlined,
   UploadOutlined,
-  FileTextOutlined
+  FileTextOutlined,
+  ArrowLeftOutlined,
+  DeleteOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as ChartTooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import { patientAPI } from '../services/api';
 import moment from 'moment';
 
@@ -35,6 +49,8 @@ const { Title, Text } = Typography;
 
 const PatientDetail = () => {
   const { id } = useParams();
+  const navigate = useNavigate();
+
   const [patient, setPatient] = useState(null);
   const [healthRecords, setHealthRecords] = useState([]);
   const [predictions, setPredictions] = useState([]);
@@ -48,22 +64,14 @@ const PatientDetail = () => {
   const loadPatientData = useCallback(async () => {
     try {
       setLoading(true);
-      
-      // Load patient info
       const patientData = await patientAPI.getPatient(id);
       setPatient(patientData);
-
-      // Load health records
       const recordsData = await patientAPI.getHealthRecords(id);
       setHealthRecords(recordsData);
-
-      // Load predictions
       const predictionsData = await patientAPI.getPredictions(id);
       setPredictions(predictionsData);
-
     } catch (error) {
       message.error('Failed to load patient data');
-      console.error('Error loading patient data:', error);
     } finally {
       setLoading(false);
     }
@@ -78,12 +86,21 @@ const PatientDetail = () => {
       setPredicting(true);
       await patientAPI.generatePrediction(id);
       message.success('Prediction generated successfully');
-      loadPatientData(); // Reload to show new prediction
+      loadPatientData();
     } catch (error) {
       message.error('Failed to generate prediction. Ensure patient has at least 1 health record.');
-      console.error('Error generating prediction:', error);
     } finally {
       setPredicting(false);
+    }
+  };
+
+  const handleDeleteRecord = async (recordId) => {
+    try {
+      await patientAPI.deleteHealthRecord(recordId);
+      message.success('Health record deleted');
+      loadPatientData();
+    } catch {
+      message.error('Failed to delete health record');
     }
   };
 
@@ -91,20 +108,17 @@ const PatientDetail = () => {
     try {
       setUploading(true);
       const result = await patientAPI.uploadMedicalReport(id, file);
-      
       if (result.success) {
-        setExtractedData(result.extracted_values);
+        setExtractedData(result.extracted_values || {});
         setShowConfirmModal(true);
         setUploadModalVisible(false);
-        message.success(`Extracted ${result.fields_found} values from report`);
+        message.success(`Extracted ${result.fields_found || 0} values from report`);
       }
     } catch (error) {
       message.error(error.response?.data?.detail || 'Failed to extract data from report');
-      console.error('Error uploading report:', error);
     } finally {
       setUploading(false);
     }
-    
     return false;
   };
 
@@ -115,15 +129,14 @@ const PatientDetail = () => {
         patient_id: parseInt(id),
         visit_date: moment().format('YYYY-MM-DD'),
         source: 'report',
-        ...extractedData
+        ...extractedData,
       };
-      
       await patientAPI.addHealthRecord(recordData);
       message.success('Health record saved successfully');
       setShowConfirmModal(false);
       setExtractedData({});
       loadPatientData();
-    } catch (error) {
+    } catch {
       message.error('Failed to save health record');
     } finally {
       setUploading(false);
@@ -131,9 +144,9 @@ const PatientDetail = () => {
   };
 
   const getRiskColor = (risk) => {
-    if (risk < 0.3) return '#52c41a'; // Green
-    if (risk < 0.7) return '#faad14'; // Orange
-    return '#ff4d4f'; // Red
+    if (risk < 0.3) return '#52c41a';
+    if (risk < 0.7) return '#faad14';
+    return '#ff4d4f';
   };
 
   const getRiskLevel = (risk) => {
@@ -142,14 +155,13 @@ const PatientDetail = () => {
     return 'High';
   };
 
-  // Prepare chart data
   const chartData = healthRecords.map((record, index) => ({
     visit: `Visit ${index + 1}`,
     date: moment(record.visit_date).format('MM/DD'),
     glucose: record.glucose,
     systolic_bp: record.systolic_bp,
     creatinine: record.creatinine,
-    cholesterol: record.cholesterol
+    cholesterol: record.cholesterol,
   }));
 
   const healthRecordColumns = [
@@ -173,31 +185,52 @@ const PatientDetail = () => {
       title: 'Glucose',
       dataIndex: 'glucose',
       key: 'glucose',
-      render: (value) => value ? `${value.toFixed(1)} mg/dL` : 'N/A',
+      render: (v) => v ? `${v.toFixed(1)} mg/dL` : 'N/A',
     },
     {
       title: 'HbA1c',
       dataIndex: 'hba1c',
       key: 'hba1c',
-      render: (value) => value ? `${value.toFixed(1)}%` : 'N/A',
+      render: (v) => v ? `${v.toFixed(1)}%` : 'N/A',
     },
     {
-      title: 'BP (Systolic)',
-      dataIndex: 'systolic_bp',
-      key: 'systolic_bp',
-      render: (value) => value ? `${value.toFixed(0)} mmHg` : 'N/A',
+      title: 'BP (Sys/Dia)',
+      key: 'bp',
+      render: (_, r) =>
+        r.systolic_bp && r.diastolic_bp
+          ? `${r.systolic_bp.toFixed(0)}/${r.diastolic_bp.toFixed(0)} mmHg`
+          : 'N/A',
     },
     {
       title: 'Creatinine',
       dataIndex: 'creatinine',
       key: 'creatinine',
-      render: (value) => value ? `${value.toFixed(2)} mg/dL` : 'N/A',
+      render: (v) => v ? `${v.toFixed(2)} mg/dL` : 'N/A',
     },
     {
       title: 'Cholesterol',
       dataIndex: 'cholesterol',
       key: 'cholesterol',
-      render: (value) => value ? `${value.toFixed(0)} mg/dL` : 'N/A',
+      render: (v) => v ? `${v.toFixed(0)} mg/dL` : 'N/A',
+    },
+    {
+      title: 'Action',
+      key: 'action',
+      width: 80,
+      render: (_, record) => (
+        <Popconfirm
+          title="Delete this record?"
+          description="This health record will be permanently removed."
+          onConfirm={() => handleDeleteRecord(record.id)}
+          okText="Delete"
+          cancelText="Cancel"
+          okButtonProps={{ danger: true }}
+        >
+          <Tooltip title="Delete record">
+            <Button danger icon={<DeleteOutlined />} size="small" />
+          </Tooltip>
+        </Popconfirm>
+      ),
     },
   ];
 
@@ -225,6 +258,15 @@ const PatientDetail = () => {
 
   return (
     <div>
+      {/* Back button */}
+      <Button
+        icon={<ArrowLeftOutlined />}
+        onClick={() => navigate('/patients')}
+        style={{ marginBottom: 16 }}
+      >
+        Back to Patients
+      </Button>
+
       {/* Patient Header */}
       <Card style={{ marginBottom: '24px' }}>
         <Row gutter={[16, 16]} align="middle">
@@ -232,18 +274,16 @@ const PatientDetail = () => {
             <UserOutlined style={{ fontSize: '48px', color: '#1890ff' }} />
           </Col>
           <Col flex="auto">
-            <Title level={2} style={{ margin: 0 }}>
-              {patient.name}
-            </Title>
+            <Title level={2} style={{ margin: 0 }}>{patient.name}</Title>
             <Space size="large">
               <Text>Age: {patient.age}</Text>
               <Text>Gender: {patient.gender === 'M' ? 'Male' : 'Female'}</Text>
-              <Text>Patient ID: {patient.id}</Text>
+              <Text type="secondary">Patient ID: #{patient.id}</Text>
             </Space>
           </Col>
           <Col>
             <Space direction="vertical" size="small">
-              <Space>
+              <Space wrap>
                 <Button
                   type="primary"
                   icon={<ExperimentOutlined />}
@@ -263,10 +303,9 @@ const PatientDetail = () => {
                 </Button>
               </Space>
               <Text type="secondary" style={{ fontSize: '12px' }}>
-                {healthRecords.length < 1 
-                  ? `Need at least 1 record (current: ${healthRecords.length})` 
-                  : `Ready with ${healthRecords.length} records`
-                }
+                {healthRecords.length < 1
+                  ? 'Need at least 1 health record'
+                  : `Ready — ${healthRecords.length} record${healthRecords.length > 1 ? 's' : ''}`}
               </Text>
             </Space>
           </Col>
@@ -275,71 +314,42 @@ const PatientDetail = () => {
 
       {/* Latest Prediction */}
       {latestPrediction && (
-        <Card 
-          title={
-            <Space>
-              <HeartOutlined />
-              Latest Risk Assessment
-            </Space>
-          }
+        <Card
+          title={<Space><HeartOutlined />Latest Risk Assessment</Space>}
           style={{ marginBottom: '24px' }}
+          extra={
+            <Text type="secondary">
+              {moment(latestPrediction.prediction_date).format('YYYY-MM-DD HH:mm')}
+            </Text>
+          }
         >
           <Row gutter={[16, 16]}>
-            <Col xs={24} md={8}>
-              <Card size="small">
-                <div style={{ textAlign: 'center' }}>
-                  <Progress
-                    type="circle"
-                    percent={Math.round(latestPrediction.diabetes_risk * 100)}
-                    strokeColor={getRiskColor(latestPrediction.diabetes_risk)}
-                    size={120}
-                  />
-                  <Title level={4} style={{ marginTop: '16px' }}>Diabetes Risk</Title>
-                  <Tag color={getRiskColor(latestPrediction.diabetes_risk)}>
-                    {getRiskLevel(latestPrediction.diabetes_risk)} Risk
-                  </Tag>
-                </div>
-              </Card>
-            </Col>
-            
-            <Col xs={24} md={8}>
-              <Card size="small">
-                <div style={{ textAlign: 'center' }}>
-                  <Progress
-                    type="circle"
-                    percent={Math.round(latestPrediction.heart_disease_risk * 100)}
-                    strokeColor={getRiskColor(latestPrediction.heart_disease_risk)}
-                    size={120}
-                  />
-                  <Title level={4} style={{ marginTop: '16px' }}>Heart Disease Risk</Title>
-                  <Tag color={getRiskColor(latestPrediction.heart_disease_risk)}>
-                    {getRiskLevel(latestPrediction.heart_disease_risk)} Risk
-                  </Tag>
-                </div>
-              </Card>
-            </Col>
-            
-            <Col xs={24} md={8}>
-              <Card size="small">
-                <div style={{ textAlign: 'center' }}>
-                  <Progress
-                    type="circle"
-                    percent={Math.round(latestPrediction.kidney_disease_risk * 100)}
-                    strokeColor={getRiskColor(latestPrediction.kidney_disease_risk)}
-                    size={120}
-                  />
-                  <Title level={4} style={{ marginTop: '16px' }}>Kidney Disease Risk</Title>
-                  <Tag color={getRiskColor(latestPrediction.kidney_disease_risk)}>
-                    {getRiskLevel(latestPrediction.kidney_disease_risk)} Risk
-                  </Tag>
-                </div>
-              </Card>
-            </Col>
+            {[
+              { label: 'Diabetes Risk', key: 'diabetes_risk' },
+              { label: 'Heart Disease Risk', key: 'heart_disease_risk' },
+              { label: 'Kidney Disease Risk', key: 'kidney_disease_risk' },
+            ].map(({ label, key }) => (
+              <Col xs={24} md={8} key={key}>
+                <Card size="small">
+                  <div style={{ textAlign: 'center' }}>
+                    <Progress
+                      type="circle"
+                      percent={Math.round(latestPrediction[key] * 100)}
+                      strokeColor={getRiskColor(latestPrediction[key])}
+                      size={120}
+                    />
+                    <Title level={4} style={{ marginTop: '16px' }}>{label}</Title>
+                    <Tag color={getRiskColor(latestPrediction[key])}>
+                      {getRiskLevel(latestPrediction[key])} Risk
+                    </Tag>
+                  </div>
+                </Card>
+              </Col>
+            ))}
           </Row>
 
-          {/* High Risk Warning */}
-          {(latestPrediction.diabetes_risk > 0.7 || 
-            latestPrediction.heart_disease_risk > 0.7 || 
+          {(latestPrediction.diabetes_risk > 0.7 ||
+            latestPrediction.heart_disease_risk > 0.7 ||
             latestPrediction.kidney_disease_risk > 0.7) && (
             <Alert
               message="High Risk Alert"
@@ -351,15 +361,9 @@ const PatientDetail = () => {
             />
           )}
 
-          {/* Explanation */}
           <Divider />
           <Title level={4}>AI Analysis</Title>
-          <div style={{ 
-            background: '#f5f5f5', 
-            padding: '20px', 
-            borderRadius: '8px',
-            lineHeight: '1.8'
-          }}>
+          <div style={{ background: '#f5f5f5', padding: '20px', borderRadius: '8px', lineHeight: '1.8' }}>
             {latestPrediction.explanation.split('\n').map((line, index) => {
               if (line.trim().startsWith('-')) {
                 return (
@@ -383,37 +387,46 @@ const PatientDetail = () => {
       )}
 
       {/* Health Trends Chart */}
-      {chartData.length > 0 && (
-        <Card title="Health Trends" style={{ marginBottom: '24px' }}>
+      {chartData.length > 1 && (
+        <Card title="Health Trends Over Time" style={{ marginBottom: '24px' }}>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" />
               <YAxis />
-              <Tooltip />
+              <ChartTooltip />
               <Legend />
-              <Line type="monotone" dataKey="glucose" stroke="#8884d8" name="Glucose (mg/dL)" />
-              <Line type="monotone" dataKey="systolic_bp" stroke="#82ca9d" name="Systolic BP (mmHg)" />
-              <Line type="monotone" dataKey="creatinine" stroke="#ffc658" name="Creatinine (mg/dL)" />
-              <Line type="monotone" dataKey="cholesterol" stroke="#ff7300" name="Cholesterol (mg/dL)" />
+              <Line type="monotone" dataKey="glucose" stroke="#8884d8" name="Glucose (mg/dL)" dot />
+              <Line type="monotone" dataKey="systolic_bp" stroke="#82ca9d" name="Systolic BP (mmHg)" dot />
+              <Line type="monotone" dataKey="creatinine" stroke="#ffc658" name="Creatinine (mg/dL)" dot />
+              <Line type="monotone" dataKey="cholesterol" stroke="#ff7300" name="Cholesterol (mg/dL)" dot />
             </LineChart>
           </ResponsiveContainer>
         </Card>
       )}
 
       {/* Health Records Table */}
-      <Card 
+      <Card
         title={
           <Space>
             <CalendarOutlined />
-            Health Records ({healthRecords.length} visits)
+            Health Records ({healthRecords.length} visit{healthRecords.length !== 1 ? 's' : ''})
           </Space>
+        }
+        extra={
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => navigate(`/add-record?patient=${id}`)}
+          >
+            Add Record
+          </Button>
         }
       >
         {healthRecords.length === 0 ? (
           <Alert
             message="No Health Records"
-            description="No health records found for this patient. Add health records to generate predictions."
+            description="No health records found. Add a health record to generate predictions."
             type="info"
             showIcon
           />
@@ -423,19 +436,14 @@ const PatientDetail = () => {
             dataSource={[...healthRecords].reverse()}
             rowKey="id"
             pagination={{ pageSize: 10 }}
-            scroll={{ x: 800 }}
+            scroll={{ x: 900 }}
           />
         )}
       </Card>
 
       {/* Upload Modal */}
       <Modal
-        title={
-          <Space>
-            <FileTextOutlined />
-            Upload Medical Report
-          </Space>
-        }
+        title={<Space><FileTextOutlined />Upload Medical Report</Space>}
         open={uploadModalVisible}
         onCancel={() => setUploadModalVisible(false)}
         footer={null}
@@ -444,12 +452,11 @@ const PatientDetail = () => {
         <div style={{ padding: '20px 0' }}>
           <Alert
             message="Supported File Types"
-            description="PDF files, JPG, PNG, TIFF, BMP images. The system will extract medical values and merge them with existing records without overwriting manual entries."
+            description="PDF, JPG, PNG, TIFF, BMP. The system extracts medical values and merges them without overwriting manual entries."
             type="info"
             showIcon
             style={{ marginBottom: '20px' }}
           />
-          
           <Upload.Dragger
             name="file"
             multiple={false}
@@ -462,21 +469,19 @@ const PatientDetail = () => {
               <UploadOutlined style={{ fontSize: '48px', color: '#1890ff' }} />
             </p>
             <p className="ant-upload-text">
-              {uploading ? 'Processing report...' : 'Click or drag medical report to upload'}
+              {uploading ? 'Processing report...' : 'Click or drag medical report here'}
             </p>
-            <p className="ant-upload-hint">
-              Supports PDF and image files (JPG, PNG, TIFF, BMP)
-            </p>
+            <p className="ant-upload-hint">Supports PDF and image files</p>
           </Upload.Dragger>
-          
           {uploading && (
             <div style={{ textAlign: 'center', marginTop: '20px' }}>
               <Spin size="large" />
-              <p style={{ marginTop: '10px' }}>Extracting medical data from report...</p>
+              <p style={{ marginTop: '10px' }}>Extracting medical data...</p>
             </div>
           )}
         </div>
       </Modal>
+
       {/* Confirm Extracted Data Modal */}
       <Modal
         title="Confirm Extracted Values"
@@ -496,13 +501,13 @@ const PatientDetail = () => {
             <Col xs={24} md={12} key={key}>
               <div style={{ marginBottom: '12px' }}>
                 <Text strong style={{ display: 'block', marginBottom: '4px' }}>
-                  {key.replace('_', ' ').toUpperCase()}
+                  {key.replace(/_/g, ' ').toUpperCase()}
                 </Text>
                 <InputNumber
                   value={value}
                   onChange={(val) => setExtractedData({ ...extractedData, [key]: val })}
                   style={{ width: '100%' }}
-                  step={key === 'hba1c' || key === 'creatinine' || key === 'bmi' ? 0.1 : 1}
+                  step={['hba1c', 'creatinine', 'bmi'].includes(key) ? 0.1 : 1}
                 />
               </div>
             </Col>

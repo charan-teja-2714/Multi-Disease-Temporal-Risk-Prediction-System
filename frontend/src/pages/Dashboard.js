@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, Row, Col, Statistic, Alert, Spin, Typography } from 'antd';
 import { 
   UserOutlined, 
@@ -11,6 +12,7 @@ import { patientAPI, systemAPI } from '../services/api';
 const { Title, Paragraph } = Typography;
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [systemHealth, setSystemHealth] = useState(null);
   const [modelInfo, setModelInfo] = useState(null);
@@ -145,7 +147,7 @@ const Dashboard = () => {
               <Col xs={24} sm={8}>
                 <Card 
                   hoverable 
-                  onClick={() => window.location.href = '/patients'}
+                  onClick={() => navigate('/patients')}
                   style={{ textAlign: 'center', cursor: 'pointer' }}
                 >
                   <UserOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
@@ -156,7 +158,7 @@ const Dashboard = () => {
               <Col xs={24} sm={8}>
                 <Card 
                   hoverable 
-                  onClick={() => window.location.href = '/add-record'}
+                  onClick={() => navigate('/add-record')}
                   style={{ textAlign: 'center', cursor: 'pointer' }}
                 >
                   <ExperimentOutlined style={{ fontSize: '24px', color: '#52c41a' }} />

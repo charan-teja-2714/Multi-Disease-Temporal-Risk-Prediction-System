@@ -2,10 +2,11 @@
 backend/api/
 backend/*.db
 backend/medical_predictions.db
+backend/*.pth
+backend/*.pt
 
 # Test and setup files
 backend/test_*.py
-backend/setup_*.py
 backend/example_*.py
 
 # Python

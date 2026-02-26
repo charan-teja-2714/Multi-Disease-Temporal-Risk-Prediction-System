@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Card,
   Form,
@@ -26,6 +27,7 @@ const { Option } = Select;
 
 const AddHealthRecord = () => {
   const [form] = Form.useForm();
+  const [searchParams] = useSearchParams();
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +38,14 @@ const AddHealthRecord = () => {
   useEffect(() => {
     loadPatients();
   }, []);
+
+  // Pre-select patient when coming from /add-record?patient=<id>
+  useEffect(() => {
+    const patientId = searchParams.get('patient');
+    if (patientId && patients.length > 0) {
+      form.setFieldValue('patient_id', parseInt(patientId));
+    }
+  }, [searchParams, patients, form]);
 
   const loadPatients = async () => {
     try {

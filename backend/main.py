@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -10,13 +10,33 @@ import uvicorn
 from dotenv import load_dotenv
 import os
 import re
-import pdfplumber
 from io import BytesIO
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
 # Load environment variables
 load_dotenv()
 
+# Auth helpers using standard library (no extra deps)
+import hashlib
+import secrets
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(32)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260000)
+    return f"{salt}:{key.hex()}"
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, key_hex = stored.split(':')
+        new_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260000)
+        return new_key.hex() == key_hex
+    except Exception:
+        return False
+
 # Import our modules
-from database import get_db, create_tables, Patient, HealthRecord, Prediction
+from database import get_db, create_tables, Patient, HealthRecord, Prediction, User
 from models.tcn import MultiTaskTCN
 from models.transformer import MultiTaskTransformer
 from data.preprocessor import HealthDataPreprocessor
@@ -39,11 +59,29 @@ app = FastAPI(
 # Add CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Pydantic models for authentication
+class UserRegister(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class UserLogin(BaseModel):
+    username_or_email: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+
+    class Config:
+        from_attributes = True
 
 # Pydantic models for API requests/responses
 class PatientCreate(BaseModel):
@@ -150,12 +188,17 @@ async def startup_event():
 
 # Patient management endpoints
 @app.post("/patients/", response_model=PatientResponse)
-async def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
-    """Create a new patient"""
+async def create_patient(
+    patient: PatientCreate,
+    x_user_id: Optional[int] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Create a new patient, scoped to the logged-in user"""
     db_patient = Patient(
         name=patient.name,
         age=patient.age,
-        gender=patient.gender
+        gender=patient.gender,
+        user_id=x_user_id
     )
     db.add(db_patient)
     db.commit()
@@ -163,18 +206,74 @@ async def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
     return db_patient
 
 @app.get("/patients/", response_model=List[PatientResponse])
-async def get_patients(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """Get all patients"""
-    patients = db.query(Patient).offset(skip).limit(limit).all()
-    return patients
+async def get_patients(
+    skip: int = 0,
+    limit: int = 100,
+    x_user_id: Optional[int] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Get patients belonging to the logged-in user"""
+    query = db.query(Patient)
+    if x_user_id is not None:
+        query = query.filter(Patient.user_id == x_user_id)
+    return query.offset(skip).limit(limit).all()
 
 @app.get("/patients/{patient_id}", response_model=PatientResponse)
-async def get_patient(patient_id: int, db: Session = Depends(get_db)):
-    """Get a specific patient"""
-    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+async def get_patient(
+    patient_id: int,
+    x_user_id: Optional[int] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Get a specific patient (must belong to the logged-in user)"""
+    query = db.query(Patient).filter(Patient.id == patient_id)
+    if x_user_id is not None:
+        query = query.filter(Patient.user_id == x_user_id)
+    patient = query.first()
     if patient is None:
         raise HTTPException(status_code=404, detail="Patient not found")
     return patient
+
+# Edit patient
+@app.put("/patients/{patient_id}", response_model=PatientResponse)
+async def update_patient(
+    patient_id: int,
+    patient: PatientCreate,
+    x_user_id: Optional[int] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Update a patient's basic info"""
+    query = db.query(Patient).filter(Patient.id == patient_id)
+    if x_user_id is not None:
+        query = query.filter(Patient.user_id == x_user_id)
+    db_patient = query.first()
+    if db_patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    db_patient.name = patient.name
+    db_patient.age = patient.age
+    db_patient.gender = patient.gender
+    db.commit()
+    db.refresh(db_patient)
+    return db_patient
+
+# Delete patient (cascades health records and predictions)
+@app.delete("/patients/{patient_id}")
+async def delete_patient(
+    patient_id: int,
+    x_user_id: Optional[int] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Delete a patient and all their records"""
+    query = db.query(Patient).filter(Patient.id == patient_id)
+    if x_user_id is not None:
+        query = query.filter(Patient.user_id == x_user_id)
+    db_patient = query.first()
+    if db_patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    db.query(Prediction).filter(Prediction.patient_id == patient_id).delete()
+    db.query(HealthRecord).filter(HealthRecord.patient_id == patient_id).delete()
+    db.delete(db_patient)
+    db.commit()
+    return {"success": True, "message": "Patient deleted"}
 
 # Health records endpoints
 @app.post("/health-records/", response_model=HealthRecordResponse)
@@ -218,6 +317,16 @@ async def get_patient_health_records(patient_id: int, db: Session = Depends(get_
         HealthRecord.patient_id == patient_id
     ).order_by(HealthRecord.visit_date).all()
     return records
+
+@app.delete("/health-records/record/{record_id}")
+async def delete_health_record(record_id: int, db: Session = Depends(get_db)):
+    """Delete a single health record"""
+    record = db.query(HealthRecord).filter(HealthRecord.id == record_id).first()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Health record not found")
+    db.delete(record)
+    db.commit()
+    return {"success": True, "message": "Health record deleted"}
 
 # Feature name mapping for different report formats
 FEATURE_MAPPING = {
@@ -680,6 +789,34 @@ async def debug_patient_data(patient_id: int, db: Session = Depends(get_db)):
             "systolic_bp": r.systolic_bp
         } for r in health_records]
     }
+
+# Auth endpoints
+@app.post("/auth/register", response_model=UserResponse)
+async def register(user: UserRegister, db: Session = Depends(get_db)):
+    """Register a new user"""
+    if db.query(User).filter(User.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
+    if db.query(User).filter(User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    hashed = hash_password(user.password)
+    db_user = User(username=user.username, email=user.email, password_hash=hashed)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/auth/login", response_model=UserResponse)
+async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    """Login with username or email"""
+    identifier = credentials.username_or_email.strip().lower()
+    db_user = (
+        db.query(User).filter(User.username == credentials.username_or_email).first()
+        or db.query(User).filter(User.email == identifier).first()
+    )
+    if not db_user or not verify_password(credentials.password, db_user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return db_user
 
 # Health check endpoint
 @app.get("/health")

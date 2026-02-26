@@ -5,16 +5,27 @@ from datetime import datetime
 
 Base = declarative_base()
 
+class User(Base):
+    """System user for authentication"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class Patient(Base):
     """Patient basic information"""
     __tablename__ = "patients"
-    
+
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     age = Column(Integer, nullable=False)
     gender = Column(String, nullable=False)  # 'M' or 'F'
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     health_records = relationship("HealthRecord", back_populates="patient")
     predictions = relationship("Prediction", back_populates="patient")
@@ -71,8 +82,19 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def create_tables():
-    """Create all database tables"""
+    """Create all database tables and run lightweight migrations"""
     Base.metadata.create_all(bind=engine)
+
+    # Migration: add user_id column to patients if it doesn't exist yet
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(
+            __import__('sqlalchemy').text("PRAGMA table_info(patients)")
+        )]
+        if 'user_id' not in cols:
+            conn.execute(__import__('sqlalchemy').text(
+                "ALTER TABLE patients ADD COLUMN user_id INTEGER REFERENCES users(id)"
+            ))
+            conn.commit()
 
 def get_db():
     """Get database session"""

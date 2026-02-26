@@ -1,12 +1,24 @@
 import axios from 'axios';
 
-// const API_BASE_URL = 'http://localhost:8000';
-const API_BASE_URL = 'https://multi-disease-temporal-risk-prediction.onrender.com';
+const API_BASE_URL = 'http://localhost:8000';
+// const API_BASE_URL = 'https://multi-disease-temporal-risk-prediction.onrender.com';
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+});
+
+// Automatically attach the current user's ID to every request
+api.interceptors.request.use((config) => {
+  try {
+    const stored = sessionStorage.getItem('user');
+    if (stored) {
+      const user = JSON.parse(stored);
+      if (user?.id) config.headers['X-User-Id'] = user.id;
+    }
+  } catch {}
+  return config;
 });
 
 // Patient API calls
@@ -29,6 +41,18 @@ export const patientAPI = {
     return response.data;
   },
 
+  // Update patient
+  updatePatient: async (patientId, patientData) => {
+    const response = await api.put(`/patients/${patientId}`, patientData);
+    return response.data;
+  },
+
+  // Delete patient
+  deletePatient: async (patientId) => {
+    const response = await api.delete(`/patients/${patientId}`);
+    return response.data;
+  },
+
   // Get patient health records
   getHealthRecords: async (patientId) => {
     const response = await api.get(`/health-records/${patientId}`);
@@ -38,6 +62,12 @@ export const patientAPI = {
   // Add health record
   addHealthRecord: async (recordData) => {
     const response = await api.post('/health-records/', recordData);
+    return response.data;
+  },
+
+  // Delete a single health record
+  deleteHealthRecord: async (recordId) => {
+    const response = await api.delete(`/health-records/record/${recordId}`);
     return response.data;
   },
 
@@ -63,6 +93,19 @@ export const patientAPI = {
         'Content-Type': 'multipart/form-data',
       },
     });
+    return response.data;
+  }
+};
+
+// Auth API calls
+export const authAPI = {
+  register: async (username, email, password) => {
+    const response = await api.post('/auth/register', { username, email, password });
+    return response.data;
+  },
+
+  login: async (username_or_email, password) => {
+    const response = await api.post('/auth/login', { username_or_email, password });
     return response.data;
   }
 };
