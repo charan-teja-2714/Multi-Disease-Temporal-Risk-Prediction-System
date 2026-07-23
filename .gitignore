@@ -52,11 +52,14 @@ checkpoints/
 # Environment variables
 .env
 .env.local
+.env.production
+.env.development
 
 # Frontend
 frontend/node_modules/
 frontend/build/
 frontend/.env
+frontend/.env.local
 
 # IDE
 .vscode/
@@ -66,10 +69,17 @@ frontend/.env
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
 # Logs
 *.log
 logs/
+
+# Uploaded files
+uploads/
+*.pdf
+*.tiff
+*.bmp
 
 # Data (optional - uncomment if data files are large)
 # data/raw/
@@ -79,3 +89,7 @@ logs/
 *.tmp
 *.bak
 *.cache
+
+# OS
+.DS_Store
+desktop.ini
